@@ -1,4 +1,4 @@
-function AP_process_histology(im_path,resize_factor,slice_images)
+function AP_process_histology(im_path)
 % AP_process_histology(im_path,resize_factor,slice_images)
 %
 % im_path - path with images of slides (tif/tiff/ome.tiff)
@@ -13,187 +13,45 @@ function AP_process_histology(im_path,resize_factor,slice_images)
 % Andy Peters (peters.andrew.j@gmail.com)
 
 % Get and sort image files
-im_path_dir = dir([im_path filesep '*.tif*']);
+im_path_dir = dir([im_path filesep '*5x.jpg*']);
 im_fn = natsortfiles(cellfun(@(path,fn) [path filesep fn], ...
     {im_path_dir.folder},{im_path_dir.name},'uni',false));
-
-% Check image metadata for pixel size (if ome.tiff)
 im_info = imfinfo(im_fn{1});
-if isfield(im_info,'ImageDescription')
-    im_description = im_info(1).ImageDescription;
-    im_um = regexp(im_description,'PhysicalSizeX="(\S*)".*PhysicalSizeY="(\S*)"','tokens');
-else
-    im_um = [];
-end
 
-% If image is RGB, set flag
-im_is_rgb = strcmp(im_info(1).PhotometricInterpretation,'RGB');
+% Set resize factor to match to Allen CCF
+im_um2px = 0.908;
+allen_um2px = 10; % Allen CCF: 10 um/voxel
+resize_factor = im_um2px/allen_um2px;
 
-% Set resize factor from user (if provided), or if no resize factor
-% provided and pixel size is available, resize to match CCF
-if exist('resize_factor','var') && ~isempty(resize_factor)
-    % (resize_factor already set by user)
-    
-elseif (~exist('resize_factor','var') || isempty(resize_factor)) && ~isempty(im_um)
-    im_um_x = str2num(im_um{1}{1});
-    im_um_y = str2num(im_um{1}{2});
-    
-    if im_um_x ~= im_um_y
-        error('Pixel X/Y values different (not accounted for yet)')
-    end
-    
-    % Set resize factor to match to Allen CCF
-    allen_um2px = 10; % Allen CCF: 10 um/voxel
-    resize_factor = im_um_x/allen_um2px;
-    
-else
-    error('No resize factor provided and pixel size not in metadata');
-end
-
-% Load and resize images
+%% Load and resize images
 n_im = length(im_fn);
-
 h = waitbar(0,'Loading and resizing images...');
-if ~im_is_rgb
-    % If channels separated as b/w, load in separately and white balance
-    
-    n_channels = sum(any([im_info.Height;im_info.Width],1));
-    im_resized = cell(n_im,n_channels);
-    
-    for curr_im = 1:n_im
-        for curr_channel = 1:n_channels
-            im_resized{curr_im,curr_channel} = imresize(imread(im_fn{curr_im},curr_channel),resize_factor);
-        end
-        waitbar(curr_im/n_im,h,['Loading and resizing images (' num2str(curr_im) '/' num2str(n_im) ')...']);
-    end
-    close(h);
-    
-    % Estimate white balance within each channel
-    % (dirty: assume one peak for background, one for signal)
-    h = figure;
-    im_montage = cell(n_channels,1);
-    channel_caxis = nan(n_channels,2);
-    channel_color = cell(n_channels,1);
-    for curr_channel = 1:n_channels
-        
-        curr_montage = montage(im_resized(:,curr_channel));
-        
-        im_montage{curr_channel} = curr_montage.CData;
-        
-        im_hist = histcounts(im_montage{curr_channel}(im_montage{curr_channel} > 0),0:max(im_montage{curr_channel}(:)));
-        im_hist_smoothed = smooth(im_hist,50,'loess');
-        im_hist_deriv = [0;diff(im_hist_smoothed)];
-        
-        % The signal minimum is the valley between background and signal
-        [~,bg_down] = min(im_hist_deriv);
-        bg_signal_min = find(im_hist_deriv(bg_down:end) > 0,1) + bg_down;
-        % The signal maximum is < 1% median value
-        [~,bg_median_rel] = max(im_hist_smoothed(bg_signal_min:end));
-        signal_median = bg_median_rel + bg_signal_min - 1;
-        signal_high_cutoff = im_hist_smoothed(signal_median)*0.01;
-        signal_high_rel = find(im_hist_smoothed(signal_median:end) < signal_high_cutoff,1);
-        signal_high = signal_high_rel + signal_median;
-        % (if no < 1%, just take max)
-        if(isempty(signal_high))
-            signal_high = length(im_hist_smoothed);
-        end
-        
-        cmin = bg_signal_min;
-        cmax = signal_high;
-        caxis([cmin,cmax]);
-        
-        check_contrast = questdlg('Contrast ok?','Set contrast','Yes','Manual','Yes');
-        if strcmp(check_contrast,'Manual')
-            waitfor(imcontrast(gcf));
-            [cmin,cmax] = caxis;
-        end
-        
-        channel_caxis(curr_channel,:) = [cmin,cmax];
-        
-        channel_color{curr_channel} = questdlg('What color should this be?', ...
-            'Set color','red','green','blue','red');
-        
-    end
-    close(h)
-    
-    % Get order of colors
-    color_order_gun = {'red';'green';'blue'};
-    [~,color_order_slide] = ismember(channel_color,color_order_gun);
-    
-    %     % Display montage of final balanced image, sort color channels by RGB
-    %     im_montage_rgb = zeros(size(im_montage{1},1),size(im_montage{1},2),3);
-    %     im_montage_rgb(:,:,color_order_slide) = ...
-    %         cell2mat(arrayfun(@(ch) rescale(im_montage{ch}, ...
-    %         'InputMin',channel_caxis(ch,1),'InputMax',channel_caxis(ch,2)), ...
-    %         permute(1:n_channels,[1,3,2]),'uni',false));
-    %     figure;imshow(im_montage_rgb);
-    %     title('Overview of all images');
-    
-    % Store RGB for each slide
-    im_rgb = cellfun(@(x) zeros(size(x,1),size(x,2),3),im_resized(:,1),'uni',false);
-    for curr_im = 1:n_im
-        im_rgb{curr_im}(:,:,color_order_slide) = ...
-            cell2mat(arrayfun(@(ch) rescale(im_resized{curr_im,ch}, ...
-            'InputMin',channel_caxis(ch,1),'InputMax',channel_caxis(ch,2)), ...
-            permute(1:n_channels,[1,3,2]),'uni',false));
-    end
-    
-elseif im_is_rgb
-    % If images are already RGB, just load in and resize
-    im_rgb = cell(n_im,1);
-    for curr_im = 1:n_im
-        im_rgb{curr_im} = imresize(imread(im_fn{curr_im}),resize_factor);
-        waitbar(curr_im/n_im,h,['Loading and resizing images (' num2str(curr_im) '/' num2str(n_im) ')...']);
-    end
-    close(h)
+im_rgb = cell(n_im,1);
+for curr_im = 1:n_im
+    im_rgb{curr_im} = imresize(imread(im_fn{curr_im}),resize_factor);
+    waitbar(curr_im/n_im,h,['Loading and resizing images (' num2str(curr_im) '/' num2str(n_im) ')...']);
 end
+close(h)
 
-% Set slice_images false by default
-if ~exist('slice_images','var') || isempty(slice_images)
-    slice_images = false;
-end
+%% set up GUI to pick slices on slide to extract 
+slice_fig = figure('KeyPressFcn',@slice_keypress);
 
-if ~slice_images
-    % If slide images, set up GUI to pick slices on slide to extract
-    
-    slice_fig = figure('KeyPressFcn',@slice_keypress);
-    
-    % Initialize data
-    slice_data = struct;
-    slice_data.im_path = im_path;
-    slice_data.im_fn = im_fn;
-    slice_data.im_rescale_factor = resize_factor;
-    slice_data.im_rgb = im_rgb;
-    slice_data.curr_slide = 0;
-    slice_data.slice_mask = cell(0,0);
-    slice_data.slice_rgb = cell(0,0);
-    
-    % Update gui data
-    guidata(slice_fig, slice_data);
-    
-    % Update slide
-    update_slide(slice_fig);
-    
-elseif slice_images
-    % If slice images, save all images as-is
-    
-    % Set save directory as subdirectory within original
-    save_dir = [im_path filesep 'slices'];
-    if ~exist(save_dir,'dir')
-        mkdir(save_dir)
-    end
-    
-    % Write all slice images to separate files
-    disp('Saving slice images...');
-    for curr_im = 1:length(im_rgb)
-        curr_fn = [save_dir filesep num2str(curr_im) '.tif'];
-        imwrite(im_rgb{curr_im},curr_fn,'tif');
-    end
-    disp('Done.');
-    
-    
-end
+% Initialize data
+slice_data = struct;
+slice_data.im_path = im_path;
+slice_data.im_fn = im_fn;
+slice_data.im_rescale_factor = resize_factor;
+slice_data.im_rgb = im_rgb;
+slice_data.curr_slide = 0;
+slice_data.slice_mask = cell(0,0);
+slice_data.slice_rgb = cell(0,0);
 
+% Update gui data
+guidata(slice_fig, slice_data);
+
+% Update slide
+update_slide(slice_fig);
+    
 end
 
 function slice_click(slice_fig,eventdata)
@@ -301,7 +159,7 @@ curr_im_bw = nanmean(slice_data.im_rgb{slice_data.curr_slide},3);
 im_hist_deriv = [0;diff(smooth(im_hist,3))];
 [~,bg_down] = min(im_hist_deriv);
 bg_signal_min = find(im_hist_deriv(bg_down:end) > 0,1) + bg_down;
-slice_threshold = im_hist_edges(bg_signal_min)*0.5; % err on the smaller side
+slice_threshold = im_hist_edges(bg_signal_min);
 
 slice_mask = imfill(bwareaopen(mean( ...
     slice_data.im_rgb{slice_data.curr_slide},3) > slice_threshold,min_slice),'holes');
@@ -370,7 +228,7 @@ function save_slice_rgb(slice_fig)
 slice_data = guidata(slice_fig);
 
 % Set save directory as subdirectory within original
-save_dir = [slice_data.im_path filesep 'slices'];
+save_dir = [slice_data.im_path filesep 'atlas_alignment'];
 if ~exist(save_dir,'dir')
     mkdir(save_dir)
 end
