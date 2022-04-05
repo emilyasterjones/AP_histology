@@ -60,7 +60,15 @@ AP_get_probe_histology(tv,av,st,slice_path);
 % map area indices to regions and layers
 load([slice_path filesep 'probe_ccf.mat'])
 probe_ccf.areas = st.safe_name(probe_ccf.trajectory_areas);
-probe_ccf.regions = char(strcat(extractBefore(probe_ccf.areas, 'area'), 'area'));
+for i=1:length(probe_ccf.areas)
+    if contains(probe_ccf.areas(i), 'layer')
+        probe_ccf.regions(i,:) = extractBefore(probe_ccf.areas(i), ' layer');
+    else
+        probe_ccf.regions(i,:) = probe_ccf.areas(i);
+    end
+end
+% cast to char so it's readable when loaded into Python
+probe_ccf.regions = char(probe_ccf.regions);
 probe_ccf.layers = char(extractAfter(probe_ccf.areas, 'layer '));
 
 % shift to bregma, convert to microns
@@ -79,7 +87,12 @@ probe_ccf.trajectory_coords(:,3) = bregma(3) - (probe_ccf.trajectory_coords(:,3)
 probe_ccf.trajectory_bregma = [probe_ccf.trajectory_bregma(:,3)...
     probe_ccf.trajectory_bregma(:,1)...
     probe_ccf.trajectory_bregma(:,2)];
+
 % calculate angle of insertion
+% note this is much shallower or even in the opposite direction than your
+% surgery angle, as the Allen atlas coordinates are relative to their
+% sectioning plane, not to bregma space
+% so not terribly useful
 probe_ccf.angle = atan2d(probe_ccf.trajectory_bregma(end,3)...
     ,probe_ccf.trajectory_bregma(end,2)-probe_ccf.trajectory_bregma(1,2))-90;
 save([slice_path filesep 'probe_ccf.mat'], 'probe_ccf')
